@@ -1,42 +1,66 @@
 import express from "express";
 import cors from "cors";
 import axios from "axios";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// SMS relay endpoint
-app.post("/sms-proxy", async (req, res) => {
-  const { to, from, body } = req.body;
-  if (!to || !from || !body) return res.status(400).json({ error: "Missing to/from/body" });
+// Airtable config
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
+const AIRTABLE_TABLE = "Conversations";
+const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 
+// ✅ Handle incoming SMS from TextGrid
+app.post("/incoming", async (req, res) => {
   try {
-    const ACCOUNT_SID = process.env.ACCOUNT_SID;
-    const AUTH_TOKEN = process.env.AUTH_TOKEN;
+    const { From, To, Body } = req.body;
 
-    const url = `https://api.textgrid.com/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`;
+    if (!From || !To || !Body) {
+      return res.status(400).json({ error: "Missing From, To, or Body" });
+    }
 
-    const data = new URLSearchParams({
-      From: `+${from.replace(/\D/g, "")}`,
-      To: `+${to.replace(/\D/g, "")}`,
-      Body: body,
-    });
+    console.log("📩 Incoming SMS:", { From, To, Body });
 
-    const response = await axios.post(url, data, {
-      auth: { username: ACCOUNT_SID, password: AUTH_TOKEN },
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    });
+    // Format timestamp for Airtable
+    const receivedTime = new Date().toISOString();
 
-    console.log("✅ Sent:", to, body);
-    res.json({ ok: true, data: response.data });
-  } catch (err) {
-    console.error("❌ Send error:", err.message);
-    res.status(500).json({ error: err.message });
+    // Create record in Airtable
+    await axios.post(
+      `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(
+        AIRTABLE_TABLE
+      )}`,
+      {
+        fields: {
+          "Direction": "Inbound",
+          "Received Time": receivedTime,
+          "Seller Phone Number": From,
+          "TextGrid Phone Number": To,
+          "Message": Body,
+          "Processed Time": receivedTime,
+          "Delivery Status": "Received",
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("✅ Logged to Airtable!");
+    res.status(200).send("OK");
+  } catch (error) {
+    console.error("❌ Error saving to Airtable:", error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
 app.get("/", (req, res) => res.send("✅ SMS Proxy running"));
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 Server active on port ${PORT}`));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
